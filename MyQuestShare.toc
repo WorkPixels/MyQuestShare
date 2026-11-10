@@ -1,0 +1,11 @@
+## Interface: 16001
+## Interface-Forever: 16001
+## Interface-Classic: 11508
+## Interface-BCC: 20504
+## Title: MyQuestShare
+## Notes: Auto-shares zone and dungeon quests with your group and syncs with Questie and default QuestLog UI.
+## Author: Antigravity
+## Version: 1.0.0
+## SavedVariables: MyQuestShareSettings
+
+MyQuestShare.lua
