@@ -157,18 +157,41 @@ end
 local GetDifficultyColorHex = function(level) return MQS:GetDifficultyColorHex(level) end
 
 local function IsQuestShareable(index, questID)
-    if C_QuestLog and C_QuestLog.IsPushableQuest then
-        if questID then
-            return C_QuestLog.IsPushableQuest(questID)
-        end
-    elseif GetQuestLogPushable then
-        local current = GetQuestLogSelection()
-        if SelectQuestLogEntry then SelectQuestLogEntry(index) end
-        local pushable = GetQuestLogPushable()
-        if SelectQuestLogEntry then SelectQuestLogEntry(current) end
-        return pushable
+    if not questID and index and C_QuestLog and C_QuestLog.GetInfo then
+        local info = C_QuestLog.GetInfo(index)
+        if info then questID = info.questID end
     end
-    return false
+    
+    if questID and C_QuestLog and C_QuestLog.IsPushableQuest then
+        local pushable = C_QuestLog.IsPushableQuest(questID)
+        if pushable ~= nil then
+            return pushable == true or pushable == 1
+        end
+    end
+    
+    local logIndex = index
+    if questID and C_QuestLog and C_QuestLog.GetLogIndexForQuestID then
+        local fetched = C_QuestLog.GetLogIndexForQuestID(questID)
+        if fetched and fetched > 0 then logIndex = fetched end
+    end
+    
+    if GetQuestLogPushable then
+        if logIndex and SelectQuestLogEntry then
+            local cur = GetQuestLogSelection and GetQuestLogSelection()
+            SelectQuestLogEntry(logIndex)
+            local pushable = GetQuestLogPushable()
+            if cur then SelectQuestLogEntry(cur) end
+            if pushable ~= nil then return pushable == true or pushable == 1 end
+        end
+        if questID and C_QuestLog and C_QuestLog.SetSelectedQuest then
+            local cur = C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest()
+            C_QuestLog.SetSelectedQuest(questID)
+            local pushable = GetQuestLogPushable()
+            if cur then C_QuestLog.SetSelectedQuest(cur) end
+            if pushable ~= nil then return pushable == true or pushable == 1 end
+        end
+    end
+    return true
 end
 
 local function GetSelectedQuestIndexOrID()
@@ -183,20 +206,60 @@ end
 local function RestoreSelectedQuest(saved)
     if not saved then return end
     if C_QuestLog and C_QuestLog.SetSelectedQuest then
-        C_QuestLog.SetSelectedQuest(saved)
+        pcall(C_QuestLog.SetSelectedQuest, saved)
     elseif SelectQuestLogEntry then
-        SelectQuestLogEntry(saved)
+        pcall(SelectQuestLogEntry, saved)
     end
 end
 
 local function PushQuestToGroup(index, questID)
-    if C_QuestLog and C_QuestLog.PushQuestToParty and questID then
-        C_QuestLog.PushQuestToParty(questID)
-    elseif QuestLogPushQuest then
-        if SelectQuestLogEntry and index then
-            SelectQuestLogEntry(index)
+    if not questID and index and C_QuestLog and C_QuestLog.GetInfo then
+        local info = C_QuestLog.GetInfo(index)
+        if info then questID = info.questID end
+    end
+    
+    local logIndex = index
+    if questID and C_QuestLog and C_QuestLog.GetLogIndexForQuestID then
+        local fetched = C_QuestLog.GetLogIndexForQuestID(questID)
+        if fetched and fetched > 0 then logIndex = fetched end
+    end
+    
+    -- 1. Select the quest in the quest log across all modern and classic API generations
+    if questID and C_QuestLog and C_QuestLog.SetSelectedQuest then
+        pcall(C_QuestLog.SetSelectedQuest, questID)
+    end
+    if logIndex and SelectQuestLogEntry then
+        pcall(SelectQuestLogEntry, logIndex)
+    end
+    
+    -- 2. Call Blizzard's modern QuestMapFrame helper if present
+    if QuestMapQuestOptions_ShareQuest and questID then
+        pcall(QuestMapQuestOptions_ShareQuest, questID)
+    end
+    
+    -- 3. Call QuestLogPushQuest with logIndex (the exact argument pattern modern FrameXML uses)
+    if QuestLogPushQuest then
+        if logIndex then
+            pcall(QuestLogPushQuest, logIndex)
         end
-        QuestLogPushQuest()
+        if questID and questID ~= logIndex then
+            pcall(QuestLogPushQuest, questID)
+        end
+        pcall(QuestLogPushQuest)
+    end
+    
+    -- 4. If DetailsFrame.ShareButton exists and is enabled, click it
+    if QuestMapFrame and QuestMapFrame.DetailsFrame and QuestMapFrame.DetailsFrame.ShareButton then
+        local sb = QuestMapFrame.DetailsFrame.ShareButton
+        if sb.Click and sb:IsEnabled() then
+            pcall(function() sb:Click() end)
+        end
+    end
+    if QuestLogPopupDetailFrame and QuestLogPopupDetailFrame.ShareButton then
+        local sb = QuestLogPopupDetailFrame.ShareButton
+        if sb.Click and sb:IsEnabled() then
+            pcall(function() sb:Click() end)
+        end
     end
 end
 
@@ -578,13 +641,8 @@ ProcessQueue = function()
     PushQuestToGroup(quest.index, quest.questID)
     MQS.groupShared[quest.title] = true
     
-    MQS.shareTimeoutTimer = C_Timer.NewTimer(3.0, function()
-        if MQS.currentlySharingQuest == quest.title then
-            MQS:ProceedSharingQueue()
-        end
-    end)
-    
-    C_Timer.After(0.4, function()
+    -- 1.0 second delay between quest shares so the WoW server accepts and dispatches each one cleanly without throttling
+    C_Timer.After(1.0, function()
         if MQS.currentlySharingQuest == quest.title then
             MQS:ProceedSharingQueue()
         end
