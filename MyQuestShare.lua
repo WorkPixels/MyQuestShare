@@ -95,11 +95,15 @@ MQS.DUNGEON_TO_QUEST_HEADERS = {
 -- -------------------------------------------------------------
 -- Secret Value Protection & Safe Wrappers (WoW Forever / 11.0+)
 -- -------------------------------------------------------------
+local function IsSecret(v)
+    return (issecretvalue and issecretvalue(v)) or false
+end
+
 local function SafeCall(fn, ...)
     if type(fn) ~= "function" then return nil end
     local ok, a = pcall(fn, ...)
     if not ok then return nil end
-    if issecretvalue and issecretvalue(a) then
+    if IsSecret(a) then
         return nil
     end
     return a
@@ -295,7 +299,7 @@ local function RegisterPrefix(prefix)
 end
 
 local function GetShortName(fullName)
-    if not fullName then return nil end
+    if not fullName or IsSecret(fullName) or type(fullName) ~= "string" then return nil end
     local name = string.match(fullName, "^([^-]+)")
     return name or fullName
 end
@@ -518,7 +522,9 @@ end
 -- Zone & Header Matching
 -- -------------------------------------------------------------
 function MQS.IsHeaderMatchingZone(headerName, currentZone)
-    if not headerName or headerName == "" or not currentZone or currentZone == "" then
+    if not headerName or not currentZone then return false end
+    if IsSecret(headerName) or IsSecret(currentZone) then return false end
+    if type(headerName) ~= "string" or type(currentZone) ~= "string" or headerName == "" or currentZone == "" then
         return false
     end
     
@@ -562,8 +568,7 @@ local function GetCurrentZoneQuests()
     local quests = {}
     local numEntries = GetNumEntries()
     local currentZone = GetRealZoneText()
-    
-    if not currentZone or currentZone == "" then
+    if not currentZone or IsSecret(currentZone) or type(currentZone) ~= "string" or currentZone == "" then
         return quests
     end
     
@@ -814,7 +819,10 @@ local expandAllBtn = nil
 local collapseAllBtn = nil
 
 local function UpdateBottomButtons()
-    local currentZone = GetRealZoneText() or "Unknown Zone"
+    local currentZone = GetRealZoneText()
+    if not currentZone or IsSecret(currentZone) or type(currentZone) ~= "string" then
+        currentZone = "Current Zone"
+    end
     local isDungeon = MQS.DUNGEON_TO_QUEST_HEADERS[currentZone] ~= nil
     
     MQS.matchingQuests = GetCurrentZoneQuests()
@@ -1436,9 +1444,12 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
         
         local currentZone = GetRealZoneText()
+        if not currentZone or IsSecret(currentZone) or type(currentZone) ~= "string" or currentZone == "" then return end
+        
         if MyQuestShareSettings.autoShare and IsInGroup() and currentZone ~= MQS.lastSharedZone then
             C_Timer.After(3.0, function()
                 local delayedZone = GetRealZoneText()
+                if not delayedZone or IsSecret(delayedZone) or type(delayedZone) ~= "string" then return end
                 if delayedZone ~= MQS.lastSharedZone and IsInGroup() then
                     local currentQuests = GetCurrentZoneQuests()
                     local shareList = {}
@@ -1480,13 +1491,14 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         
     elseif event == "CHAT_MSG_ADDON" then
         local prefix, text, channel, sender = arg1, arg2, arg3, arg4
-        if prefix == ADDON_PREFIX then
+        if IsSecret(prefix) or IsSecret(text) or IsSecret(sender) then return end
+        if prefix == ADDON_PREFIX and type(text) == "string" then
             local playerName = UnitName("player")
             local shortSender = GetShortName(sender)
             local shortPlayer = GetShortName(playerName)
             
             if shortSender and shortSender ~= shortPlayer then
-                local cmd, data = string.match(text or "", "^([^:]+):?(.*)$")
+                local cmd, data = string.match(text, "^([^:]+):?(.*)$")
                 if cmd == "PING" then
                     MQS.peerVersions[shortSender] = data or "1.0.0"
                     SendAddonMsg(ADDON_PREFIX, "PONG:1.0.0")
@@ -1496,7 +1508,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
                     MQS:SendQuestSync()
                 elseif cmd == "SYNC" then
                     MQS.peerQuests[shortSender] = {}
-                    if data and data ~= "" then
+                    if data and data ~= "" and not IsSecret(data) then
                         for pair in string.gmatch(data, "([^;]+)") do
                             local qIDStr, statusStr = string.match(pair, "^(%d+)=(%d+)$")
                             if qIDStr and statusStr then
@@ -1507,7 +1519,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
                         end
                     end
                 elseif cmd == "REQ_SHARE" then
-                    local requestedZone = (data and data ~= "") and data or GetRealZoneText()
+                    local requestedZone = (data and data ~= "" and not IsSecret(data)) and data or GetRealZoneText()
                     local currentQuests = GetCurrentZoneQuests()
                     local shareList = {}
                     for _, q in ipairs(currentQuests) do
@@ -1516,8 +1528,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
                         end
                     end
                     if #shareList > 0 and IsAnyGroupMemberNearby() then
-                        if not MyQuestShareSettings.silentShare then
-                            print("|cFF00FF00[MyQuestShare]|r Auto-responding to quest share request for " .. requestedZone .. "...")
+                        if not MyQuestShareSettings.silentShare and not IsSecret(requestedZone) then
+                            print("|cFF00FF00[MyQuestShare]|r Auto-responding to quest share request for " .. tostring(requestedZone) .. "...")
                         end
                         ShareQuests(shareList)
                     end
@@ -1527,39 +1539,40 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         
     elseif event == "CHAT_MSG_SYSTEM" then
         local msg = arg1
-        if msg then
-            if ERR_QUEST_ACCEPTED_S then
-                local acceptedPattern = ERR_QUEST_ACCEPTED_S:gsub("%%s", "(.+)")
-                local name, quest = string.match(msg, acceptedPattern)
-                if name and quest then
-                    name = name:gsub("^%s*(.-)%s*$", "%1")
-                    quest = quest:gsub("^%s*(.-)%s*$", "%1")
-                    local shortName = GetShortName(name)
-                    if not MQS.groupAccepted[quest] then
-                        MQS.groupAccepted[quest] = {}
-                    end
-                    MQS.groupAccepted[quest][shortName] = true
+        if not msg or IsSecret(msg) or type(msg) ~= "string" then return end
+        
+        if ERR_QUEST_ACCEPTED_S and not IsSecret(ERR_QUEST_ACCEPTED_S) then
+            local acceptedPattern = ERR_QUEST_ACCEPTED_S:gsub("%%s", "(.+)")
+            local ok, name, quest = pcall(string.match, msg, acceptedPattern)
+            if ok and name and quest and not IsSecret(name) and not IsSecret(quest) then
+                name = name:gsub("^%s*(.-)%s*$", "%1")
+                quest = quest:gsub("^%s*(.-)%s*$", "%1")
+                local shortName = GetShortName(name)
+                if not MQS.groupAccepted[quest] then
+                    MQS.groupAccepted[quest] = {}
                 end
+                MQS.groupAccepted[quest][shortName] = true
             end
-            
-            if ERR_QUEST_ALREADY_DONE_S then
-                local donePattern = ERR_QUEST_ALREADY_DONE_S:gsub("%%s", "(.+)")
-                local name = string.match(msg, donePattern)
-                if name and MQS.currentlySharingQuest then
-                    local shortName = GetShortName(name:gsub("^%s*(.-)%s*$", "%1"))
-                    if not MQS.groupAccepted[MQS.currentlySharingQuest] then
-                        MQS.groupAccepted[MQS.currentlySharingQuest] = {}
-                    end
-                    MQS.groupAccepted[MQS.currentlySharingQuest][shortName] = true
+        end
+        
+        if ERR_QUEST_ALREADY_DONE_S and not IsSecret(ERR_QUEST_ALREADY_DONE_S) then
+            local donePattern = ERR_QUEST_ALREADY_DONE_S:gsub("%%s", "(.+)")
+            local ok, name = pcall(string.match, msg, donePattern)
+            if ok and name and not IsSecret(name) and MQS.currentlySharingQuest then
+                local shortName = GetShortName(name:gsub("^%s*(.-)%s*$", "%1"))
+                if not MQS.groupAccepted[MQS.currentlySharingQuest] then
+                    MQS.groupAccepted[MQS.currentlySharingQuest] = {}
                 end
+                MQS.groupAccepted[MQS.currentlySharingQuest][shortName] = true
             end
         end
         
     elseif event == "QUEST_ACCEPTED" then
         local questIndex, questID = arg1, arg2
+        if IsSecret(questIndex) or IsSecret(questID) then return end
         if questIndex and questIndex > 0 then
             local title, _, qID, _, _, level = GetQuestInfo(questIndex)
-            if title then
+            if title and not IsSecret(title) then
                 local colorHex = GetDifficultyColorHex(level)
                 print(string.format("|cFF00FF00[MyQuestShare]|r Quest Accepted: %s[%s] %s|r", colorHex, tostring(level or "?"), title))
             end
