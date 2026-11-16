@@ -364,24 +364,12 @@ local function IsAnyGroupMemberNearby()
         if rawName and rawName ~= "" and rawName ~= playerName then
             local isConn = SafeCall(UnitIsConnected, unit)
             if isConn ~= false then
-                local inRange = SafeCall(UnitInRange, unit)
-                if inRange == true then
-                    return true
-                end
-                
-                local interact = SafeCall(CheckInteractDistance, unit, 4)
-                if interact == true then
-                    return true
-                end
-                
-                if inRange == nil and interact == nil then
-                    return true
-                end
+                return true
             end
         end
     end
     
-    return true
+    return false
 end
 
 local function HasEveryoneAccepted(questTitle)
@@ -397,7 +385,7 @@ local function HasEveryoneAccepted(questTitle)
     local limit = isRaid and numMembers or (numMembers - 1)
     local playerName = UnitName("player")
     
-    local nearbyCount = 0
+    local connectedCount = 0
     local acceptedCount = 0
     
     for i = 1, limit do
@@ -406,25 +394,16 @@ local function HasEveryoneAccepted(questTitle)
         if rawName and rawName ~= "" and rawName ~= playerName then
             local isConn = SafeCall(UnitIsConnected, unit)
             if isConn ~= false then
-                local isNearby = true
-                local inRange = SafeCall(UnitInRange, unit)
-                local interact = SafeCall(CheckInteractDistance, unit, 4)
-                if inRange == false and interact == false then
-                    isNearby = false
-                end
-                
-                if isNearby then
-                    nearbyCount = nearbyCount + 1
-                    local name = GetShortName(rawName)
-                    if name and accepted[name] then
-                        acceptedCount = acceptedCount + 1
-                    end
+                connectedCount = connectedCount + 1
+                local name = GetShortName(rawName)
+                if name and accepted[name] then
+                    acceptedCount = acceptedCount + 1
                 end
             end
         end
     end
     
-    return nearbyCount > 0 and acceptedCount >= nearbyCount
+    return connectedCount > 0 and acceptedCount >= connectedCount
 end
 
 local function HasEveryoneOrPeerGotQuest(questID, questTitle)
@@ -802,13 +781,17 @@ StaticPopupDialogs["MQS_CONFIRM_MQS_REQ"] = {
 -- =============================================================
 local shareZoneBtn = nil
 local shareAllBtn = nil
-local syncBtn = nil
 local cbAutoShare = nil
 local searchBox = nil
 local expandAllBtn = nil
 local collapseAllBtn = nil
+local EnsureQuestMapUI = nil
 
 local function UpdateBottomButtons()
+    if EnsureQuestMapUI then
+        EnsureQuestMapUI()
+    end
+    
     local currentZone = GetRealZoneText()
     if not currentZone or IsSecret(currentZone) or type(currentZone) ~= "string" then
         currentZone = "Current Zone"
@@ -990,7 +973,8 @@ local function BuildQuestMapUI()
     bottomBar:SetHeight(52)
     bottomBar:SetPoint("BOTTOMLEFT", QuestMapFrame, "BOTTOMLEFT", 4, 3)
     bottomBar:SetPoint("BOTTOMRIGHT", QuestMapFrame, "BOTTOMRIGHT", -4, 3)
-    bottomBar:SetFrameLevel((QuestMapFrame:GetFrameLevel() or 10) + 15)
+    bottomBar:SetFrameStrata("HIGH")
+    bottomBar:SetFrameLevel(50)
     
     local bg = bottomBar:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
@@ -1066,33 +1050,13 @@ local function BuildQuestMapUI()
     end)
     qmShareAllBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
-    -- Row 2, Left: Request Quests Button
-    local qmSyncBtn = CreateFrame("Button", "MQS_QMSyncBtn", bottomBar, "UIPanelButtonTemplate")
-    qmSyncBtn:SetSize(130, 20)
-    qmSyncBtn:SetPoint("TOPLEFT", bottomBar, "TOPLEFT", 6, -28)
-    qmSyncBtn:SetText("Request Quests")
-    local font3 = qmSyncBtn:GetFontString()
-    if font3 then font3:SetFontObject("GameFontHighlightSmall") end
-    
-    qmSyncBtn:SetScript("OnClick", function()
-        local zoneText = GetRealZoneText() or "Current Zone"
-        StaticPopup_Show("MQS_CONFIRM_QUESTIE_REQ", zoneText)
-    end)
-    qmSyncBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Request Quests from Group", 1, 0.82, 0)
-        GameTooltip:AddLine("Broadcasts a request asking group members running Questie or MyQuestShare to share their quests for this zone/dungeon.", 1, 1, 1, true)
-        GameTooltip:Show()
-    end)
-    qmSyncBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    
-    -- Row 2, Right: Auto-Share Checkbox
+    -- Row 2, Left: Auto-Share Checkbox
     local qmCbAuto = CreateFrame("CheckButton", "MQS_QMCbAuto", bottomBar, "UICheckButtonTemplate")
     qmCbAuto:SetSize(20, 20)
-    qmCbAuto:SetPoint("LEFT", qmSyncBtn, "RIGHT", 10, 0)
+    qmCbAuto:SetPoint("TOPLEFT", bottomBar, "TOPLEFT", 6, -28)
     local cbText = qmCbAuto:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    cbText:SetPoint("LEFT", qmCbAuto, "RIGHT", 2, 0)
-    cbText:SetText("Auto-Share")
+    cbText:SetPoint("LEFT", qmCbAuto, "RIGHT", 4, 0)
+    cbText:SetText("Auto-share when zoning")
     qmCbAuto:SetScript("OnClick", function(self)
         MyQuestShareSettings.autoShare = self:GetChecked()
         print("|cFF00FF00[MyQuestShare]|r Auto-share is now: " .. (MyQuestShareSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
@@ -1105,6 +1069,29 @@ local function BuildQuestMapUI()
     end)
     qmCbAuto:SetScript("OnLeave", function() GameTooltip:Hide() end)
     qmCbAuto:SetChecked(MyQuestShareSettings.autoShare)
+    
+    -- Row 2, Right: Reset Map Position Button
+    local qmResetPosBtn = CreateFrame("Button", "MQS_QMResetPosBtn", bottomBar, "UIPanelButtonTemplate")
+    qmResetPosBtn:SetSize(84, 20)
+    qmResetPosBtn:SetPoint("TOPRIGHT", bottomBar, "TOPRIGHT", -6, -28)
+    qmResetPosBtn:SetText("Reset Pos")
+    local font3 = qmResetPosBtn:GetFontString()
+    if font3 then font3:SetFontObject("GameFontHighlightSmall") end
+    qmResetPosBtn:SetScript("OnClick", function()
+        if WorldMapFrame then
+            WorldMapFrame:ClearAllPoints()
+            WorldMapFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+            MyQuestShareSettings.mapPosition = nil
+            print("|cFF00FF00[MyQuestShare]|r Map position reset to center.")
+        end
+    end)
+    qmResetPosBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Reset Map Position", 1, 0.82, 0)
+        GameTooltip:AddLine("Re-centers the World Map window to the middle of the screen.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    qmResetPosBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
     -- Ensure QuestScrollFrame bottom terminates above the 52px bottom bar
     if QuestScrollFrame and not QuestScrollFrame._mqsScrollHooked then
@@ -1132,6 +1119,12 @@ local function BuildQuestMapUI()
     
     MQS.qmShareZoneBtn = qmShareZoneBtn
     MQS.qmCbAuto = qmCbAuto
+end
+
+EnsureQuestMapUI = function()
+    if QuestMapFrame and not _G["MQS_QuestMapBottomBar"] then
+        BuildQuestMapUI()
+    end
 end
 
 -- -------------------------------------------------------------
@@ -1254,30 +1247,13 @@ local function BuildMQSUI()
     end)
     shareAllBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
-    -- Sync / Request Button (Questie & MQS)
-    syncBtn = CreateFrame("Button", "MQS_InFrameSyncBtn", QuestLogFrame, "UIPanelButtonTemplate")
-    syncBtn:SetSize(62, 22)
-    syncBtn:SetPoint("LEFT", shareAllBtn, "RIGHT", 4, 0)
-    syncBtn:SetText("Req Sync")
-    syncBtn:SetScript("OnClick", function()
-        local zoneText = GetRealZoneText() or "Current Zone"
-        StaticPopup_Show("MQS_CONFIRM_QUESTIE_REQ", zoneText)
-    end)
-    syncBtn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:AddLine("Request Quest Sharing", 1, 0.82, 0)
-        GameTooltip:AddLine("Asks party members running Questie or MyQuestShare to share their quests.", 1, 1, 1, true)
-        GameTooltip:Show()
-    end)
-    syncBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    
     -- Auto-Share Checkbox
     cbAutoShare = CreateFrame("CheckButton", "MQS_InFrameAutoShareCB", QuestLogFrame, "UICheckButtonTemplate")
     cbAutoShare:SetSize(20, 20)
-    cbAutoShare:SetPoint("LEFT", syncBtn, "RIGHT", 6, 0)
+    cbAutoShare:SetPoint("LEFT", shareAllBtn, "RIGHT", 10, 0)
     local cbText = cbAutoShare:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     cbText:SetPoint("LEFT", cbAutoShare, "RIGHT", 2, 0)
-    cbText:SetText("Auto")
+    cbText:SetText("Auto-Share")
     cbAutoShare:SetScript("OnClick", function(self)
         MyQuestShareSettings.autoShare = self:GetChecked()
         print("|cFF00FF00[MyQuestShare]|r Auto-share is now: " .. (MyQuestShareSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
@@ -1391,8 +1367,8 @@ end
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-eventFrame:RegisterEvent("ZONE_CHANGED")
 eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("QUEST_LOG_UPDATE")
 eventFrame:RegisterEvent("CHAT_MSG_SYSTEM")
@@ -1415,48 +1391,61 @@ local function InitAddon()
     
     MakeWorldMapMovable()
     MakeQuestLogMovable()
-    BuildQuestMapUI()
+    EnsureQuestMapUI()
     BuildMQSUI()
     RestoreMapPosition()
     UpdateBottomButtons()
+    
+    if WorldMapFrame and not WorldMapFrame._mqsShowHooked then
+        WorldMapFrame._mqsShowHooked = true
+        WorldMapFrame:HookScript("OnShow", function()
+            EnsureQuestMapUI()
+            UpdateBottomButtons()
+        end)
+    end
 end
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
-    if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
-        InitAddon()
-        
-    elseif event == "PLAYER_LOGIN" then
-        InitAddon()
-        
-    elseif event == "ZONE_CHANGED_NEW_AREA" or event == "ZONE_CHANGED" then
-        if IsInGroup() then
-            MQS:AutoSyncQuestie()
+    if event == "ADDON_LOADED" then
+        if arg1 == ADDON_NAME then
+            InitAddon()
+        else
+            EnsureQuestMapUI()
+            UpdateBottomButtons()
         end
         
+    elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+        InitAddon()
+        
+    elseif event == "ZONE_CHANGED_NEW_AREA" then
         local currentZone = GetRealZoneText()
         if not currentZone or IsSecret(currentZone) or type(currentZone) ~= "string" or currentZone == "" then return end
         
-        if MyQuestShareSettings.autoShare and IsInGroup() and currentZone ~= MQS.lastSharedZone then
-            C_Timer.After(3.0, function()
-                local delayedZone = GetRealZoneText()
-                if not delayedZone or IsSecret(delayedZone) or type(delayedZone) ~= "string" then return end
-                if delayedZone ~= MQS.lastSharedZone and IsInGroup() then
-                    local currentQuests = GetCurrentZoneQuests()
-                    local shareList = {}
-                    for _, q in ipairs(currentQuests) do
-                        if not HasEveryoneAccepted(q.title) and not MQS.groupShared[q.title] then
-                            table.insert(shareList, q)
+        if currentZone ~= MQS.lastSharedZone then
+            MQS.lastSharedZone = currentZone
+            
+            if MyQuestShareSettings.autoShare and IsInGroup() then
+                C_Timer.After(3.0, function()
+                    local delayedZone = GetRealZoneText()
+                    if not delayedZone or IsSecret(delayedZone) or type(delayedZone) ~= "string" then return end
+                    if IsInGroup() then
+                        local currentQuests = GetCurrentZoneQuests()
+                        local shareList = {}
+                        for _, q in ipairs(currentQuests) do
+                            if not HasEveryoneAccepted(q.title) and not MQS.groupShared[q.title] then
+                                table.insert(shareList, q)
+                            end
+                        end
+                        
+                        if #shareList > 0 and IsAnyGroupMemberNearby() then
+                            if not MyQuestShareSettings.silentShare then
+                                print("|cFF00FF00[MyQuestShare]|r Auto-sharing quests for " .. delayedZone .. "...")
+                            end
+                            ShareQuests(shareList)
                         end
                     end
-                    
-                    if #shareList > 0 and IsAnyGroupMemberNearby() then
-                        if not MyQuestShareSettings.silentShare then
-                            print("|cFF00FF00[MyQuestShare]|r Auto-sharing quests for " .. delayedZone .. "...")
-                        end
-                        ShareQuests(shareList)
-                    end
-                end
-            end)
+                end)
+            end
         end
         
         UpdateBottomButtons()
@@ -1470,14 +1459,11 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
             MQS.peerVersions = {}
         else
             MQS:CleanGroupAcceptedCache()
-            MQS:SendPing()
-            MQS:AutoSyncQuestie()
         end
         UpdateBottomButtons()
         
     elseif event == "QUEST_LOG_UPDATE" then
         UpdateBottomButtons()
-        MQS:RequestQuestSync()
         
     elseif event == "CHAT_MSG_ADDON" then
         local prefix, text, channel, sender = arg1, arg2, arg3, arg4
