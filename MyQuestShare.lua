@@ -219,51 +219,41 @@ end
 local function PushQuestToGroup(index, questID)
     if not questID and index and C_QuestLog and C_QuestLog.GetInfo then
         local info = C_QuestLog.GetInfo(index)
-        if info then questID = info.questID end
+        if info and info.questID and info.questID > 0 then
+            questID = info.questID
+        end
     end
     
     local logIndex = index
-    if questID and C_QuestLog and C_QuestLog.GetLogIndexForQuestID then
+    if questID and type(questID) == "number" and questID > 0 and C_QuestLog and C_QuestLog.GetLogIndexForQuestID then
         local fetched = C_QuestLog.GetLogIndexForQuestID(questID)
-        if fetched and fetched > 0 then logIndex = fetched end
+        if fetched and fetched > 0 then
+            logIndex = fetched
+        end
     end
     
     -- 1. Select the quest in the quest log across all modern and classic API generations
-    if questID and C_QuestLog and C_QuestLog.SetSelectedQuest then
+    if questID and type(questID) == "number" and questID > 0 and C_QuestLog and C_QuestLog.SetSelectedQuest then
         pcall(C_QuestLog.SetSelectedQuest, questID)
     end
-    if logIndex and SelectQuestLogEntry then
+    if logIndex and type(logIndex) == "number" and logIndex > 0 and SelectQuestLogEntry then
         pcall(SelectQuestLogEntry, logIndex)
     end
     
     -- 2. Call Blizzard's modern QuestMapFrame helper if present
-    if QuestMapQuestOptions_ShareQuest and questID then
+    if questID and type(questID) == "number" and questID > 0 and QuestMapQuestOptions_ShareQuest then
         pcall(QuestMapQuestOptions_ShareQuest, questID)
     end
     
-    -- 3. Call QuestLogPushQuest with logIndex (the exact argument pattern modern FrameXML uses)
+    -- 3. Call QuestLogPushQuest with logIndex (modern FrameXML pattern) or fallback
     if QuestLogPushQuest then
-        if logIndex then
+        if logIndex and type(logIndex) == "number" and logIndex > 0 then
             pcall(QuestLogPushQuest, logIndex)
         end
-        if questID and questID ~= logIndex then
+        if questID and type(questID) == "number" and questID > 0 and questID ~= logIndex then
             pcall(QuestLogPushQuest, questID)
         end
         pcall(QuestLogPushQuest)
-    end
-    
-    -- 4. If DetailsFrame.ShareButton exists and is enabled, click it
-    if QuestMapFrame and QuestMapFrame.DetailsFrame and QuestMapFrame.DetailsFrame.ShareButton then
-        local sb = QuestMapFrame.DetailsFrame.ShareButton
-        if sb.Click and sb:IsEnabled() then
-            pcall(function() sb:Click() end)
-        end
-    end
-    if QuestLogPopupDetailFrame and QuestLogPopupDetailFrame.ShareButton then
-        local sb = QuestLogPopupDetailFrame.ShareButton
-        if sb.Click and sb:IsEnabled() then
-            pcall(function() sb:Click() end)
-        end
     end
 end
 
