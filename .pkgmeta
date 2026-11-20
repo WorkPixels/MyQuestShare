@@ -1,0 +1,8 @@
+package-as: MyQuestLog
+
+ignore:
+  - .github
+  - .gitignore
+  - README.md
+  - MyQuestLog_Logo.jpg
+  - "*.zip"
