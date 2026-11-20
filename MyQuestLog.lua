@@ -1,10 +1,11 @@
 -- =============================================================
--- MyQuestShare - Enhanced Default Quest Log for WoW Forever
+-- MyQuestLog - Enhanced Default Quest Log for WoW Forever
 -- =============================================================
 local ADDON_NAME, MQS = ...
-_G["MyQuestShare"] = MQS
+_G["MyQuestLog"] = MQS
 
-local ADDON_PREFIX = "MQS"
+local ADDON_PREFIX = "MYQUESTLOG"
+local LEGACY_PREFIX = "MQS"
 
 MQS.queue = {}
 MQS.isProcessingQueue = false
@@ -566,6 +567,63 @@ local function GetCurrentZoneQuests()
     return quests
 end
 
+local function GetQuestsForHeader(targetHeaderName, targetHeaderIndex)
+    local quests = {}
+    if not targetHeaderName or IsSecret(targetHeaderName) or type(targetHeaderName) ~= "string" or targetHeaderName == "" then
+        return quests
+    end
+    
+    local targetLower = targetHeaderName:gsub("^%s*(.-)%s*$", "%1"):lower()
+    if targetLower == "" then
+        return quests
+    end
+    
+    local function ScanHeaderQuests()
+        local found = {}
+        local numEntries = GetNumEntries()
+        local currentHeader = ""
+        for i = 1, numEntries do
+            local title, isHeader, questID, isCollapsed, isComplete, level = GetQuestInfo(i)
+            if title and not IsSecret(title) and type(title) == "string" then
+                if isHeader then
+                    currentHeader = title
+                else
+                    local headerLower = currentHeader:gsub("^%s*(.-)%s*$", "%1"):lower()
+                    if headerLower == targetLower then
+                        local tag = GetQuestTag(i, questID, currentHeader)
+                        table.insert(found, {
+                            index = i,
+                            questID = questID,
+                            title = title,
+                            level = level,
+                            tag = tag,
+                            isComplete = isComplete,
+                            isShareable = IsQuestShareable(i, questID),
+                        })
+                    end
+                end
+            end
+        end
+        return found
+    end
+    
+    quests = ScanHeaderQuests()
+    
+    -- Classic fallback when a header is collapsed and GetQuestLogTitle hides child entries
+    if #quests == 0 and not (C_QuestLog and C_QuestLog.GetInfo) and type(targetHeaderIndex) == "number" and targetHeaderIndex > 0 then
+        if ExpandQuestHeader and CollapseQuestHeader and not (InCombatLockdown and InCombatLockdown()) then
+            local _, _, _, isHeader, isCollapsed = GetQuestLogTitle(targetHeaderIndex)
+            if isHeader and isCollapsed then
+                pcall(ExpandQuestHeader, targetHeaderIndex)
+                quests = ScanHeaderQuests()
+                pcall(CollapseQuestHeader, targetHeaderIndex)
+            end
+        end
+    end
+    
+    return quests
+end
+
 -- -------------------------------------------------------------
 -- Sharing Queue Engine
 -- -------------------------------------------------------------
@@ -587,8 +645,8 @@ ProcessQueue = function()
             RestoreSelectedQuest(MQS.originalSelection)
             MQS.originalSelection = nil
         end
-        if not MyQuestShareSettings.silentShare then
-            print("|cFF00FF00[MyQuestShare]|r Completed sharing quests.")
+        if not MyQuestLogSettings.silentShare then
+            print("|cFF00FF00[MyQuestLog]|r Completed sharing quests.")
         end
         return
     end
@@ -600,7 +658,7 @@ ProcessQueue = function()
             RestoreSelectedQuest(MQS.originalSelection)
             MQS.originalSelection = nil
         end
-        print("|cFFFF0000[MyQuestShare] Error: Group members left range. Sharing queue cancelled.|r")
+        print("|cFFFF0000[MyQuestLog] Error: Group members left range. Sharing queue cancelled.|r")
         return
     end
     
@@ -608,8 +666,8 @@ ProcessQueue = function()
     MQS.isProcessingQueue = true
     MQS.currentlySharingQuest = quest.title
     
-    if not MyQuestShareSettings.silentShare then
-        print(string.format("|cFF00FF00[MyQuestShare]|r Sharing: |cFFFFD100%s|r (%d remaining)", quest.title, #MQS.queue))
+    if not MyQuestLogSettings.silentShare then
+        print(string.format("|cFF00FF00[MyQuestLog]|r Sharing: |cFFFFD100%s|r (%d remaining)", quest.title, #MQS.queue))
     end
     
     PushQuestToGroup(quest.index, quest.questID)
@@ -623,16 +681,22 @@ ProcessQueue = function()
     end)
 end
 
-local function ShareQuests(quests)
+local function ShareQuests(quests, zoneLabel)
     if not IsInGroup() then
-        print("|cFFFF0000[MyQuestShare] Error: You must be in a party or raid to share quests.|r")
+        print("|cFFFF0000[MyQuestLog] Error: You must be in a party or raid to share quests.|r")
         return
     end
     
     if not IsAnyGroupMemberNearby() then
-        print("|cFFFF0000[MyQuestShare] Error: No group members are nearby to receive quests.|r")
+        print("|cFFFF0000[MyQuestLog] Error: No group members are nearby to receive quests.|r")
         return
     end
+    
+    local currentZone = GetRealZoneText()
+    if not currentZone or IsSecret(currentZone) or type(currentZone) ~= "string" or currentZone == "" then
+        currentZone = "this zone"
+    end
+    local displayZone = (zoneLabel and not IsSecret(zoneLabel) and type(zoneLabel) == "string" and zoneLabel ~= "") and zoneLabel or currentZone
     
     local shareable = {}
     for _, q in ipairs(quests) do
@@ -642,19 +706,20 @@ local function ShareQuests(quests)
     end
     
     if #shareable == 0 then
-        if not MyQuestShareSettings.silentShare then
-            print("|cFFFFD100[MyQuestShare]|r No shareable quests found for this zone/dungeon.")
+        if not MyQuestLogSettings.silentShare then
+            print(string.format("|cFFFFD100[MyQuestLog]|r No shareable quests found for |cFFFFFFFF%s|r.", displayZone))
         end
         return
     end
     
-    local zoneText = GetRealZoneText() or "this zone"
-    MQS.lastSharedZone = zoneText
+    if zoneLabel == nil then
+        MQS.lastSharedZone = currentZone
+    end
     
     local toShare = {}
     local skippedCount = 0
     
-    if MyQuestShareSettings.smartShare ~= false then
+    if MyQuestLogSettings.smartShare ~= false then
         for _, q in ipairs(shareable) do
             if HasEveryoneOrPeerGotQuest(q.questID, q.title) then
                 skippedCount = skippedCount + 1
@@ -664,8 +729,8 @@ local function ShareQuests(quests)
         end
         
         if #toShare == 0 and skippedCount > 0 then
-            if not MyQuestShareSettings.silentShare then
-                print(string.format("|cFF00FF00[MyQuestShare]|r Smart Share: All nearby party members already have quests for |cFFFFD100%s|r!", zoneText))
+            if not MyQuestLogSettings.silentShare then
+                print(string.format("|cFF00FF00[MyQuestLog]|r Smart Share: All nearby party members already have quests for |cFFFFD100%s|r!", displayZone))
             end
             return
         end
@@ -722,36 +787,47 @@ end
 
 function MQS:RequestQuestieShare()
     if not IsInGroup() then
-        print("|cFFFF0000[MyQuestShare] Error: You must be in a party or raid to request Questie sharing.|r")
+        print("|cFFFF0000[MyQuestLog] Error: You must be in a party or raid to request Questie sharing.|r")
         return
     end
-    SendAddonMsg("Questie", "QC:request_log")
-    SendAddonMsg("questie", "QC:request_log")
     
-    local currentQuests = GetCurrentZoneQuests()
-    for _, q in ipairs(currentQuests) do
-        if q.questID and q.questID > 0 then
-            SendAddonMsg("Questie", "QC:request_quest:" .. tostring(q.questID))
-            SendAddonMsg("questie", "QC:request_quest:" .. tostring(q.questID))
-        end
+    local zoneText = GetRealZoneText()
+    if not zoneText or IsSecret(zoneText) or type(zoneText) ~= "string" or zoneText == "" then
+        zoneText = "Current Zone"
     end
     
-    local zoneText = GetRealZoneText() or "Current Zone"
-    print(string.format("|cFF00FF00[MyQuestShare]|r Sent quest share request to Questie users for |cFFFFD100%s|r.", zoneText))
+    -- Request sharing from MyQuestLog peers
+    SendAddonMsg(ADDON_PREFIX, "REQ_SHARE:" .. zoneText)
+    
+    -- Trigger Questie's own full quest-list sync if Questie is loaded
+    if _G.Questie and _G.Questie.SendMessage then
+        pcall(_G.Questie.SendMessage, _G.Questie, "QC_ID_REQUEST_FULL_QUESTLIST")
+    end
+    
+    -- Send a single polite group chat message only upon explicit user confirmation
+    if not MyQuestLogSettings.silentShare and SendChatMessage then
+        local chatType = IsInRaid() and "RAID" or "PARTY"
+        pcall(SendChatMessage, "[MyQuestLog] Could someone with Questie please share quests for " .. zoneText .. "?", chatType)
+    end
+    
+    print(string.format("|cFF00FF00[MyQuestLog]|r Sent Questie share request to group for |cFFFFD100%s|r.", zoneText))
 end
 
 function MQS:RequestMQSShare()
     if not IsInGroup() then
-        print("|cFFFF0000[MyQuestShare] Error: You must be in a party or raid to request sharing.|r")
+        print("|cFFFF0000[MyQuestLog] Error: You must be in a party or raid to request sharing.|r")
         return
     end
     local zoneText = GetRealZoneText() or ""
+    if IsSecret(zoneText) or type(zoneText) ~= "string" then
+        zoneText = ""
+    end
     SendAddonMsg(ADDON_PREFIX, "REQ_SHARE:" .. zoneText)
-    print(string.format("|cFF00FF00[MyQuestShare]|r Requested quest share from party members for |cFFFFD100%s|r.", zoneText))
+    print(string.format("|cFF00FF00[MyQuestLog]|r Requested quest share from party members for |cFFFFD100%s|r.", zoneText))
 end
 
 StaticPopupDialogs["MQS_CONFIRM_QUESTIE_REQ"] = {
-    text = "|cFFFFD100[MyQuestShare]|r Request Questie Share\n\nSend quest share request to party members running Questie for |cFFFFD100%s|r?",
+    text = "|cFFFFD100[MyQuestLog]|r Request Questie Share\n\nAsk party members running Questie or MyQuestLog to share their quests for |cFFFFD100%s|r?",
     button1 = "Request",
     button2 = "Cancel",
     OnAccept = function(self, data)
@@ -764,7 +840,7 @@ StaticPopupDialogs["MQS_CONFIRM_QUESTIE_REQ"] = {
 }
 
 StaticPopupDialogs["MQS_CONFIRM_MQS_REQ"] = {
-    text = "|cFFFFD100[MyQuestShare]|r Request AddOn Share\n\nSend quest share request to party members running MyQuestShare / MyQuestLog for |cFFFFD100%s|r?",
+    text = "|cFFFFD100[MyQuestLog]|r Request AddOn Share\n\nSend quest share request to party members running MyQuestLog for |cFFFFD100%s|r?",
     button1 = "Request",
     button2 = "Cancel",
     OnAccept = function(self, data)
@@ -781,11 +857,16 @@ StaticPopupDialogs["MQS_CONFIRM_MQS_REQ"] = {
 -- =============================================================
 local shareZoneBtn = nil
 local shareAllBtn = nil
+local reqQuestieBtn = nil
 local cbAutoShare = nil
 local searchBox = nil
 local expandAllBtn = nil
 local collapseAllBtn = nil
 local EnsureQuestMapUI = nil
+local UpdateQuestMapHeaderShareButtons = nil
+local questMapHeaderShareButtons = setmetatable({}, { __mode = "k" })
+local classicHeaderShareButtons = setmetatable({}, { __mode = "k" })
+local questMapHeaderHooksInstalled = false
 
 local function UpdateBottomButtons()
     if EnsureQuestMapUI then
@@ -809,11 +890,14 @@ local function UpdateBottomButtons()
     if MQS.qmShareZoneBtn then
         MQS.qmShareZoneBtn:SetText(btnText)
     end
-    if MQS.qmCbAuto and MyQuestShareSettings then
-        MQS.qmCbAuto:SetChecked(MyQuestShareSettings.autoShare)
+    if MQS.qmCbAuto and MyQuestLogSettings then
+        MQS.qmCbAuto:SetChecked(MyQuestLogSettings.autoShare)
     end
-    if cbAutoShare and MyQuestShareSettings then
-        cbAutoShare:SetChecked(MyQuestShareSettings.autoShare)
+    if cbAutoShare and MyQuestLogSettings then
+        cbAutoShare:SetChecked(MyQuestLogSettings.autoShare)
+    end
+    if UpdateQuestMapHeaderShareButtons then
+        UpdateQuestMapHeaderShareButtons()
     end
 end
 
@@ -837,8 +921,8 @@ local function SaveMapPosition()
     local x = left
     local y = top - (screenTop * uiScale / scale)
     
-    if not MyQuestShareSettings then MyQuestShareSettings = {} end
-    MyQuestShareSettings.mapPosition = { a = "TOPLEFT", r = "TOPLEFT", x = x, y = y }
+    if not MyQuestLogSettings then MyQuestLogSettings = {} end
+    MyQuestLogSettings.mapPosition = { a = "TOPLEFT", r = "TOPLEFT", x = x, y = y }
     
     -- Sync with Leatrix_Maps if present
     if LeaMapsLC then
@@ -860,7 +944,7 @@ local function RestoreMapPosition()
     if not WorldMapFrame or not WorldMapFrame:IsShown() then return end
     if WorldMapFrame.IsMaximized and WorldMapFrame:IsMaximized() then return end
     
-    local pos = MyQuestShareSettings and MyQuestShareSettings.mapPosition
+    local pos = MyQuestLogSettings and MyQuestLogSettings.mapPosition
     if pos and pos.x and pos.y then
         WorldMapFrame:ClearAllPoints()
         WorldMapFrame:SetPoint("TOPLEFT", UIParent, "TOPLEFT", pos.x, pos.y)
@@ -940,11 +1024,11 @@ local function MakeQuestLogMovable()
     QuestLogFrame:HookScript("OnDragStop", function()
         QuestLogFrame:StopMovingOrSizing()
         local pt, rel, relPt, x, y = QuestLogFrame:GetPoint()
-        if not MyQuestShareSettings then MyQuestShareSettings = {} end
-        MyQuestShareSettings.questLogPosition = { pt = pt, relPt = relPt, x = x, y = y }
+        if not MyQuestLogSettings then MyQuestLogSettings = {} end
+        MyQuestLogSettings.questLogPosition = { pt = pt, relPt = relPt, x = x, y = y }
     end)
     QuestLogFrame:HookScript("OnShow", function()
-        local pos = MyQuestShareSettings and MyQuestShareSettings.questLogPosition
+        local pos = MyQuestLogSettings and MyQuestLogSettings.questLogPosition
         if pos and pos.x and pos.y then
             QuestLogFrame:ClearAllPoints()
             QuestLogFrame:SetPoint(pos.pt or "CENTER", UIParent, pos.relPt or "CENTER", pos.x, pos.y)
@@ -962,6 +1046,62 @@ local function AdjustQuestScrollBottom()
     isAdjustingPoints = true
     QuestScrollFrame:SetPoint("BOTTOMRIGHT", QuestScrollFrame:GetParent(), "BOTTOMRIGHT", 0, 56)
     isAdjustingPoints = false
+end
+
+local function GetOrCreateZoneHeaderShareButton(headerFrame, buttonMap, width, height)
+    if buttonMap[headerFrame] then
+        return buttonMap[headerFrame]
+    end
+    
+    local btn = CreateFrame("Button", nil, headerFrame, "UIPanelButtonTemplate")
+    btn:SetSize(width, height)
+    btn:SetText("Share")
+    local fs = btn:GetFontString()
+    if fs then
+        fs:SetFontObject("GameFontHighlightSmall")
+    end
+    btn:EnableMouse(true)
+    btn:RegisterForClicks("LeftButtonUp")
+    btn:SetFrameLevel((headerFrame:GetFrameLevel() or 10) + 5)
+    
+    btn:SetScript("OnClick", function(self)
+        local hdrName = self._mqsHeaderName
+        local hdrIndex = self._mqsHeaderIndex
+        if not hdrName then return end
+        
+        local quests = GetQuestsForHeader(hdrName, hdrIndex)
+        if #quests == 0 then
+            print("|cFFFFD100[MyQuestLog]|r No quests found under |cFFFFFFFF" .. hdrName .. "|r.")
+            return
+        end
+        ShareQuests(quests, hdrName)
+    end)
+    
+    btn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        local hdrName = self._mqsHeaderName or "Zone"
+        GameTooltip:AddLine("Share " .. hdrName .. " Quests", 1, 0.82, 0)
+        local quests = GetQuestsForHeader(hdrName, self._mqsHeaderIndex)
+        if #quests == 0 then
+            GameTooltip:AddLine("  (No quests visible - expand header)", 0.6, 0.6, 0.6)
+        else
+            for _, q in ipairs(quests) do
+                local status = q.isShareable and "|cFF00FF00(Shareable)|r" or "|cFFFF0000(Solo)|r"
+                GameTooltip:AddLine(string.format("  • [%s] %s %s", q.level or "?", q.title, status), 0.9, 0.9, 0.9)
+            end
+        end
+        GameTooltip:AddLine(" ")
+        if IsInGroup() then
+            GameTooltip:AddLine("Click to share quests for this zone.", 0.2, 1, 0.2, true)
+        else
+            GameTooltip:AddLine("Join a party or raid to share.", 1, 0.5, 0, true)
+        end
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    
+    buttonMap[headerFrame] = btn
+    return btn
 end
 
 local function BuildQuestMapUI()
@@ -988,7 +1128,7 @@ local function BuildQuestMapUI()
     
     -- Row 1, Left: Share Zone / Share Dungeon Button
     local qmShareZoneBtn = CreateFrame("Button", "MQS_QMShareZoneBtn", bottomBar, "UIPanelButtonTemplate")
-    qmShareZoneBtn:SetSize(142, 22)
+    qmShareZoneBtn:SetSize(116, 22)
     qmShareZoneBtn:SetPoint("TOPLEFT", bottomBar, "TOPLEFT", 6, -4)
     qmShareZoneBtn:SetText("Share Zone (0)")
     local font1 = qmShareZoneBtn:GetFontString()
@@ -1023,10 +1163,38 @@ local function BuildQuestMapUI()
     end)
     qmShareZoneBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
-    -- Row 1, Right: Share All Button
+    -- Row 1, Right: Req Questie Button
+    local qmReqQuestieBtn = CreateFrame("Button", "MQS_QMReqQuestieBtn", bottomBar, "UIPanelButtonTemplate")
+    qmReqQuestieBtn:SetSize(84, 22)
+    qmReqQuestieBtn:SetPoint("TOPRIGHT", bottomBar, "TOPRIGHT", -6, -4)
+    qmReqQuestieBtn:SetText("Req Questie")
+    local fontReq = qmReqQuestieBtn:GetFontString()
+    if fontReq then fontReq:SetFontObject("GameFontHighlightSmall") end
+    
+    qmReqQuestieBtn:SetScript("OnClick", function()
+        if not IsInGroup() then
+            print("|cFFFF0000[MyQuestLog] Error: You must be in a party or raid to request Questie sharing.|r")
+            return
+        end
+        local zoneText = GetRealZoneText()
+        if not zoneText or IsSecret(zoneText) or type(zoneText) ~= "string" or zoneText == "" then
+            zoneText = "Current Zone"
+        end
+        StaticPopup_Show("MQS_CONFIRM_QUESTIE_REQ", zoneText)
+    end)
+    qmReqQuestieBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Request Questie Share", 1, 0.82, 0)
+        GameTooltip:AddLine("Opens a confirmation dialog to ask group members running Questie or MyQuestLog to share quests for the current zone or dungeon.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    qmReqQuestieBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    
+    -- Row 1, Middle: Share All Button (stretches between Share Zone and Req Questie)
     local qmShareAllBtn = CreateFrame("Button", "MQS_QMShareAllBtn", bottomBar, "UIPanelButtonTemplate")
-    qmShareAllBtn:SetSize(118, 22)
-    qmShareAllBtn:SetPoint("TOPRIGHT", bottomBar, "TOPRIGHT", -6, -4)
+    qmShareAllBtn:SetHeight(22)
+    qmShareAllBtn:SetPoint("LEFT", qmShareZoneBtn, "RIGHT", 4, 0)
+    qmShareAllBtn:SetPoint("RIGHT", qmReqQuestieBtn, "LEFT", -4, 0)
     qmShareAllBtn:SetText("Share All")
     local font2 = qmShareAllBtn:GetFontString()
     if font2 then font2:SetFontObject("GameFontHighlightSmall") end
@@ -1040,7 +1208,7 @@ local function BuildQuestMapUI()
                 table.insert(allQuests, { index = i, questID = qID, title = qTitle, level = qLevel, isComplete = isComplete })
             end
         end
-        ShareQuests(allQuests)
+        ShareQuests(allQuests, "your quest log")
     end)
     qmShareAllBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -1058,8 +1226,8 @@ local function BuildQuestMapUI()
     cbText:SetPoint("LEFT", qmCbAuto, "RIGHT", 4, 0)
     cbText:SetText("Auto-share when zoning")
     qmCbAuto:SetScript("OnClick", function(self)
-        MyQuestShareSettings.autoShare = self:GetChecked()
-        print("|cFF00FF00[MyQuestShare]|r Auto-share is now: " .. (MyQuestShareSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
+        MyQuestLogSettings.autoShare = self:GetChecked()
+        print("|cFF00FF00[MyQuestLog]|r Auto-share is now: " .. (MyQuestLogSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
     end)
     qmCbAuto:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -1068,7 +1236,7 @@ local function BuildQuestMapUI()
         GameTooltip:Show()
     end)
     qmCbAuto:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    qmCbAuto:SetChecked(MyQuestShareSettings.autoShare)
+    qmCbAuto:SetChecked(MyQuestLogSettings.autoShare)
     
     -- Row 2, Right: Reset Map Position Button
     local qmResetPosBtn = CreateFrame("Button", "MQS_QMResetPosBtn", bottomBar, "UIPanelButtonTemplate")
@@ -1081,8 +1249,8 @@ local function BuildQuestMapUI()
         if WorldMapFrame then
             WorldMapFrame:ClearAllPoints()
             WorldMapFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-            MyQuestShareSettings.mapPosition = nil
-            print("|cFF00FF00[MyQuestShare]|r Map position reset to center.")
+            MyQuestLogSettings.mapPosition = nil
+            print("|cFF00FF00[MyQuestLog]|r Map position reset to center.")
         end
     end)
     qmResetPosBtn:SetScript("OnEnter", function(self)
@@ -1118,12 +1286,169 @@ local function BuildQuestMapUI()
     end
     
     MQS.qmShareZoneBtn = qmShareZoneBtn
+    MQS.qmReqQuestieBtn = qmReqQuestieBtn
     MQS.qmCbAuto = qmCbAuto
+end
+
+UpdateQuestMapHeaderShareButtons = function()
+    if not QuestScrollFrame or not QuestMapFrame or not QuestMapFrame:IsShown() then
+        return
+    end
+    
+    local validHeaders = {}
+    local numEntries = GetNumEntries()
+    for i = 1, numEntries do
+        local title, isHeader = GetQuestInfo(i)
+        if isHeader and title and not IsSecret(title) and type(title) == "string" and title ~= "" then
+            local key = title:gsub("^%s*(.-)%s*$", "%1"):lower()
+            if key ~= "" then
+                validHeaders[key] = { title = title, index = i }
+            end
+        end
+    end
+    
+    local activeHeaderFrames = {}
+    
+    local function ResolveHeaderInfo(frame)
+        if not frame or not frame:IsShown() then return nil, nil end
+        if type(frame.questID) == "number" and frame.questID > 0 then
+            return nil, nil
+        end
+        
+        if type(frame.questLogIndex) == "number" and frame.questLogIndex > 0 then
+            local title, isHeader = GetQuestInfo(frame.questLogIndex)
+            if isHeader and title and not IsSecret(title) and type(title) == "string" and title ~= "" then
+                return title, frame.questLogIndex
+            end
+        end
+        
+        if frame.GetID then
+            local id = frame:GetID()
+            if type(id) == "number" and id > 0 then
+                local title, isHeader = GetQuestInfo(id)
+                if isHeader and title and not IsSecret(title) and type(title) == "string" and title ~= "" then
+                    return title, id
+                end
+            end
+        end
+        
+        local txt = nil
+        if frame.ButtonText and frame.ButtonText.GetText then
+            txt = frame.ButtonText:GetText()
+        elseif frame.Text and frame.Text.GetText then
+            txt = frame.Text:GetText()
+        elseif frame.GetText then
+            txt = frame:GetText()
+        end
+        if txt and not IsSecret(txt) and type(txt) == "string" and txt ~= "" then
+            local key = txt:gsub("^%s*(.-)%s*$", "%1"):lower()
+            local entry = validHeaders[key]
+            if entry then
+                return entry.title, entry.index
+            end
+        end
+        
+        return nil, nil
+    end
+    
+    local function AttachToHeader(header)
+        if not header or activeHeaderFrames[header] then return end
+        local hdrTitle, hdrIndex = ResolveHeaderInfo(header)
+        if not hdrTitle then return end
+        
+        activeHeaderFrames[header] = true
+        local btn = GetOrCreateZoneHeaderShareButton(header, questMapHeaderShareButtons, 44, 18)
+        btn._mqsHeaderName = hdrTitle
+        btn._mqsHeaderIndex = hdrIndex
+        btn:SetFrameLevel((header:GetFrameLevel() or 10) + 5)
+        
+        btn:ClearAllPoints()
+        if header.CollapseButton and header.CollapseButton:IsShown() then
+            local cbLeft = header.CollapseButton:GetLeft()
+            local hdrLeft = header:GetLeft()
+            local hdrWidth = header:GetWidth()
+            if cbLeft and hdrLeft and hdrWidth and cbLeft < (hdrLeft + hdrWidth * 0.5) then
+                btn:SetPoint("RIGHT", header, "RIGHT", -6, 0)
+            else
+                btn:SetPoint("RIGHT", header.CollapseButton, "LEFT", -4, 0)
+            end
+        else
+            btn:SetPoint("RIGHT", header, "RIGHT", -24, 0)
+        end
+        btn:Show()
+    end
+    
+    local pools = {
+        QuestScrollFrame.headerFramePool,
+        QuestScrollFrame.campaignHeaderFramePool,
+        QuestScrollFrame.campaignHeaderMinimalFramePool,
+    }
+    for _, pool in pairs(pools) do
+        if pool and pool.EnumerateActive then
+            for hdr in pool:EnumerateActive() do
+                AttachToHeader(hdr)
+            end
+        end
+    end
+    
+    local containers = {}
+    if QuestScrollFrame.Contents then
+        table.insert(containers, QuestScrollFrame.Contents)
+    end
+    if QuestScrollFrame.GetScrollChild then
+        local scrollChild = QuestScrollFrame:GetScrollChild()
+        if scrollChild and scrollChild ~= QuestScrollFrame.Contents then
+            table.insert(containers, scrollChild)
+        end
+    end
+    for _, container in ipairs(containers) do
+        for _, child in ipairs({ container:GetChildren() }) do
+            if not activeHeaderFrames[child] then
+                AttachToHeader(child)
+            end
+        end
+    end
+    
+    for hdr, btn in pairs(questMapHeaderShareButtons) do
+        if not activeHeaderFrames[hdr] then
+            btn:Hide()
+        end
+    end
 end
 
 EnsureQuestMapUI = function()
     if QuestMapFrame and not _G["MQS_QuestMapBottomBar"] then
         BuildQuestMapUI()
+    end
+    
+    if not questMapHeaderHooksInstalled then
+        if QuestLogQuests_Update then
+            hooksecurefunc("QuestLogQuests_Update", function()
+                if UpdateQuestMapHeaderShareButtons then
+                    UpdateQuestMapHeaderShareButtons()
+                end
+            end)
+            questMapHeaderHooksInstalled = true
+        end
+        if QuestMapFrame_UpdateAll then
+            hooksecurefunc("QuestMapFrame_UpdateAll", function()
+                if UpdateQuestMapHeaderShareButtons then
+                    UpdateQuestMapHeaderShareButtons()
+                end
+            end)
+            questMapHeaderHooksInstalled = true
+        end
+    end
+    
+    if QuestScrollFrame and not QuestScrollFrame._mqsHeaderShowHooked then
+        QuestScrollFrame._mqsHeaderShowHooked = true
+        QuestScrollFrame:HookScript("OnShow", function()
+            C_Timer.After(0, function()
+                if UpdateQuestMapHeaderShareButtons then
+                    UpdateQuestMapHeaderShareButtons()
+                end
+            end)
+        end)
     end
 end
 
@@ -1132,7 +1457,6 @@ end
 -- -------------------------------------------------------------
 local function EnhanceQuestLogTitles()
     if not QuestLogFrame or not QuestLogFrame:IsShown() then return end
-    if MyQuestShareSettings.showLevels == false then return end
     
     local scrollOffset = FauxScrollFrame_GetOffset and FauxScrollFrame_GetOffset(QuestLogListScrollFrame) or 0
     local numEntries = GetNumEntries()
@@ -1145,45 +1469,64 @@ local function EnhanceQuestLogTitles()
         local questIndex = scrollOffset + i
         if questIndex <= numEntries and btn:IsShown() then
             local title, level, questTag, isHeader, isCollapsed, isComplete = GetQuestLogTitle(questIndex)
-            if title and not isHeader then
-                local tag = GetQuestTag(questIndex)
-                local tagStr = (tag ~= "") and ("[" .. level .. tag .. "] ") or ("[" .. level .. "] ")
-                local color = GetQuestDifficultyColor(level)
-                
-                local isMatch = true
-                if filter and filter ~= "" then
-                    local lowerTitle = string.lower(title)
-                    isMatch = string.find(lowerTitle, filter, 1, true) ~= nil or tostring(level) == filter
+            if isHeader and title and not IsSecret(title) and type(title) == "string" and title ~= "" then
+                local sBtn = GetOrCreateZoneHeaderShareButton(btn, classicHeaderShareButtons, 40, 15)
+                sBtn._mqsHeaderName = title
+                sBtn._mqsHeaderIndex = questIndex
+                sBtn:ClearAllPoints()
+                sBtn:SetPoint("RIGHT", btn, "RIGHT", -6, 0)
+                sBtn:SetFrameLevel((btn:GetFrameLevel() or 5) + 5)
+                sBtn:Show()
+            else
+                if classicHeaderShareButtons[btn] then
+                    classicHeaderShareButtons[btn]:Hide()
                 end
-                
-                local displayTitle = tagStr .. title
-                if isComplete then
-                    displayTitle = displayTitle .. " (Complete)"
-                end
-                
-                btn:SetText(displayTitle)
-                
-                local fontString = btn:GetFontString()
-                if fontString then
-                    if isMatch then
-                        fontString:SetTextColor(color.r, color.g, color.b)
-                    else
-                        fontString:SetTextColor(0.4, 0.4, 0.4)
+                if MyQuestLogSettings.showLevels ~= false and title and not isHeader and not IsSecret(title) then
+                    local tag = GetQuestTag(questIndex)
+                    local tagStr = (tag ~= "") and ("[" .. level .. tag .. "] ") or ("[" .. level .. "] ")
+                    local color = GetQuestDifficultyColor(level)
+                    
+                    local isMatch = true
+                    if filter and filter ~= "" then
+                        local lowerTitle = string.lower(title)
+                        isMatch = string.find(lowerTitle, filter, 1, true) ~= nil or tostring(level) == filter
+                    end
+                    
+                    local displayTitle = tagStr .. title
+                    if isComplete then
+                        displayTitle = displayTitle .. " (Complete)"
+                    end
+                    
+                    btn:SetText(displayTitle)
+                    
+                    local fontString = btn:GetFontString()
+                    if fontString then
+                        if isMatch then
+                            fontString:SetTextColor(color.r, color.g, color.b)
+                        else
+                            fontString:SetTextColor(0.4, 0.4, 0.4)
+                        end
                     end
                 end
+            end
+        else
+            if classicHeaderShareButtons[btn] then
+                classicHeaderShareButtons[btn]:Hide()
             end
         end
     end
     
-    local numQuests = 0
-    for idx = 1, numEntries do
-        local _, _, _, isHeader = GetQuestLogTitle(idx)
-        if not isHeader then
-            numQuests = numQuests + 1
+    if MyQuestLogSettings.showLevels ~= false then
+        local numQuests = 0
+        for idx = 1, numEntries do
+            local _, _, _, isHeader = GetQuestLogTitle(idx)
+            if not isHeader then
+                numQuests = numQuests + 1
+            end
         end
-    end
-    if QuestLogTitleText then
-        QuestLogTitleText:SetText(string.format("Quest Log (%d/25)", numQuests))
+        if QuestLogTitleText then
+            QuestLogTitleText:SetText(string.format("Quest Log (%d/25)", numQuests))
+        end
     end
     
     UpdateBottomButtons()
@@ -1198,9 +1541,11 @@ local function BuildMQSUI()
     
     -- Share Zone / Share Dungeon Button
     shareZoneBtn = CreateFrame("Button", "MQS_InFrameShareZoneBtn", QuestLogFrame, "UIPanelButtonTemplate")
-    shareZoneBtn:SetSize(122, 22)
+    shareZoneBtn:SetSize(106, 22)
     shareZoneBtn:SetPoint("BOTTOMLEFT", QuestLogFrame, "BOTTOMLEFT", 18, 38)
     shareZoneBtn:SetText("Share Zone (0)")
+    local fontSz = shareZoneBtn:GetFontString()
+    if fontSz then fontSz:SetFontObject("GameFontHighlightSmall") end
     shareZoneBtn:SetScript("OnClick", function()
         ShareQuests(MQS.matchingQuests)
     end)
@@ -1225,9 +1570,11 @@ local function BuildMQSUI()
     
     -- Share All Button
     shareAllBtn = CreateFrame("Button", "MQS_InFrameShareAllBtn", QuestLogFrame, "UIPanelButtonTemplate")
-    shareAllBtn:SetSize(72, 22)
-    shareAllBtn:SetPoint("LEFT", shareZoneBtn, "RIGHT", 4, 0)
+    shareAllBtn:SetSize(62, 22)
+    shareAllBtn:SetPoint("LEFT", shareZoneBtn, "RIGHT", 3, 0)
     shareAllBtn:SetText("Share All")
+    local fontSa = shareAllBtn:GetFontString()
+    if fontSa then fontSa:SetFontObject("GameFontHighlightSmall") end
     shareAllBtn:SetScript("OnClick", function()
         local allQuests = {}
         local num = GetNumEntries()
@@ -1237,7 +1584,7 @@ local function BuildMQSUI()
                 table.insert(allQuests, { index = i, questID = qID, title = qTitle, level = qLevel, isComplete = isComplete })
             end
         end
-        ShareQuests(allQuests)
+        ShareQuests(allQuests, "your quest log")
     end)
     shareAllBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -1247,16 +1594,42 @@ local function BuildMQSUI()
     end)
     shareAllBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     
+    -- Req Questie Button
+    reqQuestieBtn = CreateFrame("Button", "MQS_InFrameReqQuestieBtn", QuestLogFrame, "UIPanelButtonTemplate")
+    reqQuestieBtn:SetSize(76, 22)
+    reqQuestieBtn:SetPoint("LEFT", shareAllBtn, "RIGHT", 3, 0)
+    reqQuestieBtn:SetText("Req Questie")
+    local fontRq = reqQuestieBtn:GetFontString()
+    if fontRq then fontRq:SetFontObject("GameFontHighlightSmall") end
+    reqQuestieBtn:SetScript("OnClick", function()
+        if not IsInGroup() then
+            print("|cFFFF0000[MyQuestLog] Error: You must be in a party or raid to request Questie sharing.|r")
+            return
+        end
+        local zoneText = GetRealZoneText()
+        if not zoneText or IsSecret(zoneText) or type(zoneText) ~= "string" or zoneText == "" then
+            zoneText = "Current Zone"
+        end
+        StaticPopup_Show("MQS_CONFIRM_QUESTIE_REQ", zoneText)
+    end)
+    reqQuestieBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Request Questie Share", 1, 0.82, 0)
+        GameTooltip:AddLine("Opens a confirmation dialog to ask group members running Questie or MyQuestLog to share quests for the current zone or dungeon.", 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    reqQuestieBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    
     -- Auto-Share Checkbox
     cbAutoShare = CreateFrame("CheckButton", "MQS_InFrameAutoShareCB", QuestLogFrame, "UICheckButtonTemplate")
-    cbAutoShare:SetSize(20, 20)
-    cbAutoShare:SetPoint("LEFT", shareAllBtn, "RIGHT", 10, 0)
+    cbAutoShare:SetSize(18, 18)
+    cbAutoShare:SetPoint("LEFT", reqQuestieBtn, "RIGHT", 3, 0)
     local cbText = cbAutoShare:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    cbText:SetPoint("LEFT", cbAutoShare, "RIGHT", 2, 0)
-    cbText:SetText("Auto-Share")
+    cbText:SetPoint("LEFT", cbAutoShare, "RIGHT", 1, 0)
+    cbText:SetText("Auto")
     cbAutoShare:SetScript("OnClick", function(self)
-        MyQuestShareSettings.autoShare = self:GetChecked()
-        print("|cFF00FF00[MyQuestShare]|r Auto-share is now: " .. (MyQuestShareSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
+        MyQuestLogSettings.autoShare = self:GetChecked()
+        print("|cFF00FF00[MyQuestLog]|r Auto-share is now: " .. (MyQuestLogSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
     end)
     cbAutoShare:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
@@ -1265,7 +1638,7 @@ local function BuildMQSUI()
         GameTooltip:Show()
     end)
     cbAutoShare:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    cbAutoShare:SetChecked(MyQuestShareSettings.autoShare)
+    cbAutoShare:SetChecked(MyQuestLogSettings.autoShare)
     
     -- Header Controls: Expand All, Collapse All & Search
     expandAllBtn = CreateFrame("Button", "MQS_InFrameExpandBtn", QuestLogFrame, "UIPanelButtonTemplate")
@@ -1376,16 +1749,17 @@ eventFrame:RegisterEvent("CHAT_MSG_ADDON")
 eventFrame:RegisterEvent("QUEST_ACCEPTED")
 
 local function InitAddon()
-    if not MyQuestShareSettings then
-        MyQuestShareSettings = {}
+    if not MyQuestLogSettings then
+        MyQuestLogSettings = {}
     end
     for k, v in pairs(defaultSettings) do
-        if MyQuestShareSettings[k] == nil then
-            MyQuestShareSettings[k] = v
+        if MyQuestLogSettings[k] == nil then
+            MyQuestLogSettings[k] = v
         end
     end
     
     RegisterPrefix(ADDON_PREFIX)
+    RegisterPrefix(LEGACY_PREFIX)
     RegisterPrefix("Questie")
     RegisterPrefix("questie")
     
@@ -1401,6 +1775,11 @@ local function InitAddon()
         WorldMapFrame:HookScript("OnShow", function()
             EnsureQuestMapUI()
             UpdateBottomButtons()
+            C_Timer.After(0, function()
+                if UpdateQuestMapHeaderShareButtons then
+                    UpdateQuestMapHeaderShareButtons()
+                end
+            end)
         end)
     end
 end
@@ -1424,7 +1803,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if currentZone ~= MQS.lastSharedZone then
             MQS.lastSharedZone = currentZone
             
-            if MyQuestShareSettings.autoShare and IsInGroup() then
+            if MyQuestLogSettings.autoShare and IsInGroup() then
                 C_Timer.After(3.0, function()
                     local delayedZone = GetRealZoneText()
                     if not delayedZone or IsSecret(delayedZone) or type(delayedZone) ~= "string" then return end
@@ -1438,8 +1817,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
                         end
                         
                         if #shareList > 0 and IsAnyGroupMemberNearby() then
-                            if not MyQuestShareSettings.silentShare then
-                                print("|cFF00FF00[MyQuestShare]|r Auto-sharing quests for " .. delayedZone .. "...")
+                            if not MyQuestLogSettings.silentShare then
+                                print("|cFF00FF00[MyQuestLog]|r Auto-sharing quests for " .. delayedZone .. "...")
                             end
                             ShareQuests(shareList)
                         end
@@ -1468,7 +1847,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
     elseif event == "CHAT_MSG_ADDON" then
         local prefix, text, channel, sender = arg1, arg2, arg3, arg4
         if IsSecret(prefix) or IsSecret(text) or IsSecret(sender) then return end
-        if prefix == ADDON_PREFIX and type(text) == "string" then
+        if (prefix == ADDON_PREFIX or prefix == LEGACY_PREFIX) and type(text) == "string" then
             local playerName = UnitName("player")
             local shortSender = GetShortName(sender)
             local shortPlayer = GetShortName(playerName)
@@ -1504,8 +1883,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
                         end
                     end
                     if #shareList > 0 and IsAnyGroupMemberNearby() then
-                        if not MyQuestShareSettings.silentShare and not IsSecret(requestedZone) then
-                            print("|cFF00FF00[MyQuestShare]|r Auto-responding to quest share request for " .. tostring(requestedZone) .. "...")
+                        if not MyQuestLogSettings.silentShare and not IsSecret(requestedZone) then
+                            print("|cFF00FF00[MyQuestLog]|r Auto-responding to quest share request for " .. tostring(requestedZone) .. "...")
                         end
                         ShareQuests(shareList)
                     end
@@ -1550,7 +1929,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
             local title, _, qID, _, _, level = GetQuestInfo(questIndex)
             if title and not IsSecret(title) then
                 local colorHex = GetDifficultyColorHex(level)
-                print(string.format("|cFF00FF00[MyQuestShare]|r Quest Accepted: %s[%s] %s|r", colorHex, tostring(level or "?"), title))
+                print(string.format("|cFF00FF00[MyQuestLog]|r Quest Accepted: %s[%s] %s|r", colorHex, tostring(level or "?"), title))
             end
         end
     end
@@ -1559,9 +1938,11 @@ end)
 -- =============================================================
 -- Slash Commands
 -- =============================================================
-SLASH_MYQUESTSHARE1 = "/mqs"
-SLASH_MYQUESTSHARE2 = "/questshare"
-SlashCmdList["MYQUESTSHARE"] = function(msg)
+SLASH_MYQUESTLOG1 = "/mql"
+SLASH_MYQUESTLOG2 = "/myquestlog"
+SLASH_MYQUESTLOG3 = "/mqs"
+SLASH_MYQUESTLOG4 = "/myquestshare"
+SlashCmdList["MYQUESTLOG"] = function(msg)
     local cmd = string.lower(string.match(msg or "", "^%s*(%S*)") or "")
     if cmd == "share" then
         local quests = GetCurrentZoneQuests()
@@ -1575,51 +1956,51 @@ SlashCmdList["MYQUESTSHARE"] = function(msg)
                 table.insert(allQuests, { index = i, questID = qID, title = qTitle, level = qLevel, isComplete = isComplete })
             end
         end
-        ShareQuests(allQuests)
+        ShareQuests(allQuests, "your quest log")
     elseif cmd == "questie" or cmd == "reqquestie" then
         MQS:RequestQuestieShare()
-    elseif cmd == "req" or cmd == "reqmqs" then
+    elseif cmd == "req" or cmd == "reqmql" or cmd == "reqmqs" or cmd == "mqlshare" then
         MQS:RequestMQSShare()
     elseif cmd == "auto" then
-        MyQuestShareSettings.autoShare = not MyQuestShareSettings.autoShare
-        print("|cFF00FF00[MyQuestShare]|r Auto-share is now: " .. (MyQuestShareSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
+        MyQuestLogSettings.autoShare = not MyQuestLogSettings.autoShare
+        print("|cFF00FF00[MyQuestLog]|r Auto-share is now: " .. (MyQuestLogSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
         if cbAutoShare then
-            cbAutoShare:SetChecked(MyQuestShareSettings.autoShare)
+            cbAutoShare:SetChecked(MyQuestLogSettings.autoShare)
         end
         if MQS.qmCbAuto then
-            MQS.qmCbAuto:SetChecked(MyQuestShareSettings.autoShare)
+            MQS.qmCbAuto:SetChecked(MyQuestLogSettings.autoShare)
         end
     elseif cmd == "levels" then
-        MyQuestShareSettings.showLevels = not MyQuestShareSettings.showLevels
-        print("|cFF00FF00[MyQuestShare]|r Quest level tags are now: " .. (MyQuestShareSettings.showLevels and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
+        MyQuestLogSettings.showLevels = not MyQuestLogSettings.showLevels
+        print("|cFF00FF00[MyQuestLog]|r Quest level tags are now: " .. (MyQuestLogSettings.showLevels and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
         if QuestLog_Update then QuestLog_Update() end
     elseif cmd == "resetmap" or cmd == "reset" then
         if WorldMapFrame then
             WorldMapFrame:ClearAllPoints()
             WorldMapFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-            if MyQuestShareSettings then
-                MyQuestShareSettings.mapPosition = nil
+            if MyQuestLogSettings then
+                MyQuestLogSettings.mapPosition = nil
             end
-            print("|cFF00FF00[MyQuestShare]|r Quest & Map window position reset to screen center.|r")
+            print("|cFF00FF00[MyQuestLog]|r Quest & Map window position reset to screen center.|r")
         end
     elseif cmd == "status" then
         local zone = GetRealZoneText() or "Unknown"
         local matching = GetCurrentZoneQuests()
-        print("|cFFFFD100[MyQuestShare Status]|r")
+        print("|cFFFFD100[MyQuestLog Status]|r")
         print("  Current Zone: |cFFFFFFFF" .. zone .. "|r")
         print("  Matching Quests: |cFFFFFFFF" .. #matching .. "|r")
-        print("  Auto-Share: " .. (MyQuestShareSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
-        print("  Smart-Share: " .. (MyQuestShareSettings.smartShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
+        print("  Auto-Share: " .. (MyQuestLogSettings.autoShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
+        print("  Smart-Share: " .. (MyQuestLogSettings.smartShare and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"))
         print("  In Group: " .. (IsInGroup() and "|cFF00FF00Yes|r" or "|cFFFF0000No|r"))
     else
-        print("|cFFFFD100[MyQuestShare Commands]|r")
-        print("  |cFFFFFFFF/mqs share|r - Share current zone/dungeon quests with group")
-        print("  |cFFFFFFFF/mqs all|r - Share all shareable quests in log")
-        print("  |cFFFFFFFF/mqs auto|r - Toggle automatic sharing on zone change")
-        print("  |cFFFFFFFF/mqs resetmap|r - Reset quest/map window position to center")
-        print("  |cFFFFFFFF/mqs levels|r - Toggle quest levels & difficulty tags")
-        print("  |cFFFFFFFF/mqs questie|r - Request quest shares from Questie users")
-        print("  |cFFFFFFFF/mqs req|r - Request quest shares from MyQuestShare users")
-        print("  |cFFFFFFFF/mqs status|r - Display current zone matching status")
+        print("|cFFFFD100[MyQuestLog Commands]|r |cFFAAAAAA(aliases: /myquestlog, /mqs)|r")
+        print("  |cFFFFFFFF/mql share|r - Share current zone/dungeon quests with group")
+        print("  |cFFFFFFFF/mql all|r - Share all shareable quests in log")
+        print("  |cFFFFFFFF/mql auto|r - Toggle automatic sharing on zone change")
+        print("  |cFFFFFFFF/mql resetmap|r - Reset quest/map window position to center")
+        print("  |cFFFFFFFF/mql levels|r - Toggle quest levels & difficulty tags")
+        print("  |cFFFFFFFF/mql questie|r - Request quest shares from Questie users")
+        print("  |cFFFFFFFF/mql req|r - Request quest shares from MyQuestLog users")
+        print("  |cFFFFFFFF/mql status|r - Display current zone matching status")
     end
 end

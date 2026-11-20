@@ -1,0 +1,11 @@
+## Interface: 16001
+## Interface-Forever: 16001
+## Interface-Classic: 11508
+## Interface-BCC: 20504
+## Title: MyQuestLog
+## Notes: Enhances the default Quest Log in WoW Forever with window unlocking, zone/dungeon quest sharing, per-zone share buttons, and Questie sync.
+## Author: Antigravity
+## Version: 1.0.0
+## SavedVariables: MyQuestLogSettings
+
+MyQuestLog.lua
